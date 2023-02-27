@@ -19,7 +19,7 @@
  *
  */
 
-#include "config.h" // needed for newer BFD library
+#include "config.h"
  
 #ifdef WITH_BFD
 #include <bfd.h>
