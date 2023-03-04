@@ -9,6 +9,7 @@
  *       DMA completion rather than the busy-polling shown here.
  */
 
+#include <string.h>
 #include "maple.h"
 
 #define MAPLE(x) (*(volatile unsigned long *)(0xa05f6c00+(x)))
