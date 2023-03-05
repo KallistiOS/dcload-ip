@@ -19,7 +19,7 @@
  *
  */
 
-#include "config.h"
+#include "config.h" // needed for newer BFD library
  
 #ifdef WITH_BFD
 #include <bfd.h>
@@ -188,13 +188,17 @@ int getopt(int nargc, char * const *nargv, const char *ostr)
 }
 #endif
 
+int gdb_socket_started = 0;
 #ifndef __MINGW32__
 int dcsocket = 0;
+int socket_fd = 0;
 int gdb_server_socket = -1;
 #else
 #define bzero(b,len) (memset((b), '\0', (len)), (void) 0)
+/* Winsock SOCKET is defined as an unsigned int, so -1 won't work here */
 SOCKET dcsocket = 0;
-SOCKET gdb_server_socket = -1;
+SOCKET gdb_server_socket = 0;
+SOCKET socket_fd = 0;
 #endif
 
 void cleanup(char **fnames)
@@ -208,9 +212,33 @@ void cleanup(char **fnames)
 #ifndef __MINGW32__
     close(dcsocket);
 #else
-    closesocket(dcsocket);
-    WSACleanup();
+    closesocket(dcsocket);  
 #endif
+	
+	// Handle GDB
+	if (gdb_socket_started) {	
+		gdb_socket_started = 0;
+		
+		// Send SIGTERM to the GDB Client, telling remote DC program has ended
+		char gdb_buf[16];
+		strcpy(gdb_buf, "+$X0f#ee\0");		
+		
+#ifdef __MINGW32__		
+		send(socket_fd, gdb_buf, strlen(gdb_buf), 0);
+		sleep(1);
+		closesocket(socket_fd);
+		closesocket(gdb_server_socket);
+#else
+		write(socket_fd, gdb_buf, strlen(gdb_buf));
+		sleep(1);
+		close(socket_fd);
+		close(gdb_server_socket);
+#endif
+	}
+	
+#ifdef __MINGW32__
+	WSACleanup();
+#endif	
 }
 
 extern char *optarg;
@@ -393,7 +421,7 @@ int send_data(unsigned char * addr, unsigned int dcaddr, unsigned int size)
 
 void usage(void)
 {
-    printf("\n%s %s by <andrewk@napalm-x.com>\n\n", PACKAGE, VERSION);
+    printf("\n%s %s by <andrewk@napalm-x.com>\n\n",PACKAGE,VERSION);
     printf("-x <filename> Upload and execute <filename>\n");
     printf("-u <filename> Upload <filename>\n");
     printf("-d <filename> Download to <filename>\n");
@@ -859,6 +887,12 @@ int open_gdb_socket(int port)
     return 0;
 }
 
+#ifdef __MINGW32__
+#define AVAILABLE_OPTIONS		"x:u:d:a:s:t:i:npqhrg"
+#else
+#define AVAILABLE_OPTIONS		"x:u:d:a:s:t:c:i:npqhrg"
+#endif
+
 int main(int argc, char *argv[])
 {
     unsigned int address = 0x8c010000;
@@ -885,11 +919,9 @@ int main(int argc, char *argv[])
 #ifdef __MINGW32__
 	if(start_ws())
 		return -1;
-
-	someopt = getopt(argc, argv, "x:u:d:a:s:t:i:npqhrg");
-#else
-    someopt = getopt(argc, argv, "x:u:d:a:s:t:c:i:npqhrg");
 #endif
+
+	someopt = getopt(argc, argv, AVAILABLE_OPTIONS);
     while (someopt > 0) {
 	switch (someopt) {
 	case 'x':
@@ -967,6 +999,7 @@ int main(int argc, char *argv[])
 	case 'g':
 	    printf("Starting a GDB server on port 2159\n");
 	    open_gdb_socket(2159);
+		gdb_socket_started = 1;
 	    break;
 	default:
 	/* The user obviously mistyped something */
@@ -974,11 +1007,7 @@ int main(int argc, char *argv[])
 	    goto doclean;
 	    break;
 	}
-#ifdef __MINGW32__
-	someopt = getopt(argc, argv, "x:u:d:a:s:t:i:nqhr");
-#else
-	someopt = getopt(argc, argv, "x:u:d:a:s:t:c:i:nqhr");
-#endif
+	someopt = getopt(argc, argv, AVAILABLE_OPTIONS);
     }
 
     if (quiet)
