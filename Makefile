@@ -10,23 +10,23 @@ all: subdirs
 subdirs: $(SUBDIRS)
 
 $(SUBDIRS):
-	$(MAKE) -C $@
+    $(MAKE) -C $@
 
 target-src: host-src
 
 .PHONY : install
 install: 
-	$(MAKE) -C host-src/tool install
+    $(MAKE) -C host-src/tool install
 
 .PHONY : clean
 clean:
-	for dir in $(SUBDIRS); do \
-		$(MAKE) -C $$dir clean; \
-	done
+    for dir in $(SUBDIRS); do \
+        $(MAKE) -C $$dir clean; \
+    done
 
 .PHONY : distclean
 distclean:
-	for dir in $(SUBDIRS) ; do \
-		$(MAKE) -C $$dir distclean; \
-	done
+    for dir in $(SUBDIRS) ; do \
+        $(MAKE) -C $$dir distclean; \
+    done
 

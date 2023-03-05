@@ -66,9 +66,9 @@ static DIR *opendirs[MAX_OPEN_DIRS];
 unsigned int dc_order(unsigned int x)
 {
     if (x == htonl(x))
-	return (x << 24) | ((x << 8) & 0xff0000) | ((x >> 8) & 0xff00) | ((x >> 24) & 0xff);
+        return (x << 24) | ((x << 8) & 0xff0000) | ((x >> 8) & 0xff00) | ((x >> 24) & 0xff);
     else
-	return x;
+        return x;
 }
 
 int dc_fstat(unsigned char * buffer)
@@ -123,6 +123,7 @@ int dc_write(unsigned char * buffer)
     }
 
     free(data);
+    
     return 0;
 }
 
@@ -149,31 +150,31 @@ int dc_read(unsigned char * buffer)
 
 int dc_open(unsigned char * buffer)
 {
-  int retval;
-  int ourflags = 0;
-  command_2int_string_t *command = (command_2int_string_t *)buffer;
-  /* value0 = flags value1 = mode string = name */
+    int retval;
+    int ourflags = 0;
+    command_2int_string_t *command = (command_2int_string_t *)buffer;
+    /* value0 = flags value1 = mode string = name */
 
-  /* translate flags */
+    /* translate flags */
 
-  if (ntohl(command->value0) & 0x0001)
-    ourflags |= O_WRONLY;
-  if (ntohl(command->value0) & 0x0002)
-    ourflags |= O_RDWR;
-  if (ntohl(command->value0) & 0x0008)
-    ourflags |= O_APPEND;
-  if (ntohl(command->value0) & 0x0200)
-    ourflags |= O_CREAT;
-  if (ntohl(command->value0) & 0x0400)
-    ourflags |= O_TRUNC;
-  if (ntohl(command->value0) & 0x0800)
-    ourflags |= O_EXCL;
+    if (ntohl(command->value0) & 0x0001)
+        ourflags |= O_WRONLY;
+    if (ntohl(command->value0) & 0x0002)
+        ourflags |= O_RDWR;
+    if (ntohl(command->value0) & 0x0008)
+        ourflags |= O_APPEND;
+    if (ntohl(command->value0) & 0x0200)
+        ourflags |= O_CREAT;
+    if (ntohl(command->value0) & 0x0400)
+        ourflags |= O_TRUNC;
+    if (ntohl(command->value0) & 0x0800)
+        ourflags |= O_EXCL;
 
-  retval = open(command->string, ourflags | O_BINARY, ntohl(command->value1));
+    retval = open(command->string, ourflags | O_BINARY, ntohl(command->value1));
 
-  send_cmd(CMD_RETVAL, retval, retval, NULL, 0);
+    send_cmd(CMD_RETVAL, retval, retval, NULL, 0);
 
-  return 0;
+    return 0;
 }
 
 int dc_close(unsigned char * buffer)
@@ -319,12 +320,12 @@ int dc_utime(unsigned char * buffer)
     command_3int_string_t *command = (command_3int_string_t *)buffer;
 
     if (ntohl(command->value0)) {
-	tbuf.actime = ntohl(command->value1);
-	tbuf.modtime = ntohl(command->value2);
+        tbuf.actime = ntohl(command->value1);
+        tbuf.modtime = ntohl(command->value2);
 
-	retval = utime(command->string, &tbuf);
+        retval = utime(command->string, &tbuf);
     } else {
-	retval = utime(command->string, 0);
+        retval = utime(command->string, 0);
     }
     send_cmd(CMD_RETVAL, retval, retval, NULL, 0);
 
@@ -364,7 +365,6 @@ int dc_closedir(unsigned char * buffer)
     command_int_t *command = (command_int_t *)buffer;
     uint32_t i = ntohl(command->value0);
 
-
     if(i >= DIRENT_OFFSET && i < MAX_OPEN_DIRS + DIRENT_OFFSET) {
         retval = closedir(opendirs[i - DIRENT_OFFSET]);
         opendirs[i - DIRENT_OFFSET] = NULL;
@@ -392,27 +392,28 @@ int dc_readdir(unsigned char * buffer)
 
     if (somedirent) {
 #if defined (__APPLE__) || defined (__NetBSD__) || defined (__FreeBSD__) || defined (__OpenBSD__)
-	dcdirent.d_ino = dc_order(somedirent->d_fileno);
-	dcdirent.d_off = dc_order(0);
-	dcdirent.d_reclen = dc_order(somedirent->d_reclen);
-	dcdirent.d_type = dc_order(somedirent->d_type);
+        dcdirent.d_ino = dc_order(somedirent->d_fileno);
+        dcdirent.d_off = dc_order(0);
+        dcdirent.d_reclen = dc_order(somedirent->d_reclen);
+        dcdirent.d_type = dc_order(somedirent->d_type);
 #else
-	dcdirent.d_ino = dc_order(somedirent->d_ino);
+        dcdirent.d_ino = dc_order(somedirent->d_ino);
 # if defined(_WIN32) || defined(__CYGWIN__)
-	dcdirent.d_off = dc_order(0);
-	dcdirent.d_reclen = dc_order(0);
-	dcdirent.d_type = dc_order(0);
+        dcdirent.d_off = dc_order(0);
+        dcdirent.d_reclen = dc_order(0);
+        dcdirent.d_type = dc_order(0);
 # else
-	dcdirent.d_off = dc_order(somedirent->d_off);
-	dcdirent.d_reclen = dc_order(somedirent->d_reclen);
-	dcdirent.d_type = dc_order(somedirent->d_type);
+        dcdirent.d_off = dc_order(somedirent->d_off);
+        dcdirent.d_reclen = dc_order(somedirent->d_reclen);
+        dcdirent.d_type = dc_order(somedirent->d_type);
 # endif
 #endif
-	strcpy(dcdirent.d_name, somedirent->d_name);
+        strcpy(dcdirent.d_name, somedirent->d_name);
 
-	send_data((unsigned char *)&dcdirent, ntohl(command->value1), ntohl(command->value2));
-	send_cmd(CMD_RETVAL, 1, 1, NULL, 0);
-	return 0;
+        send_data((unsigned char *)&dcdirent, ntohl(command->value1), ntohl(command->value2));
+        send_cmd(CMD_RETVAL, 1, 1, NULL, 0);
+
+        return 0;
     }
 
     send_cmd(CMD_RETVAL, 0, 0, NULL, 0);
@@ -460,14 +461,17 @@ int dc_cdfs_redir_read_sectors(int isofd, unsigned char * buffer)
     send_cmd(CMD_RETVAL, 0, 0, NULL, 0);
 
     free(buf);
+
     return 0;
 }
 
 #define GDBBUFSIZE 1024
 #ifdef __MINGW32__
 extern SOCKET gdb_server_socket;
+extern SOCKET socket_fd;
 #else
 extern int gdb_server_socket;
+extern int socket_fd;
 #endif
 
 int dc_gdbpacket(unsigned char * buffer)
@@ -475,29 +479,23 @@ int dc_gdbpacket(unsigned char * buffer)
     size_t in_size, out_size;
     static char gdb_buf[GDBBUFSIZE];
     int retval = 0;
-#ifdef __MINGW32__
-	/* Winsock SOCKET is defined as an unsigned int, so -1 won't work here */
-	static SOCKET socket_fd = 0;
-
-	if (gdb_server_socket == INVALID_SOCKET) {
+    
+#ifdef __MINGW32__	
+    if (gdb_server_socket == INVALID_SOCKET) {
 #else
-    static int socket_fd = 0;
-
-	if (gdb_server_socket < 0) {
+    if (gdb_server_socket < 0) {
 #endif
         send_cmd(CMD_RETVAL, -1, -1, NULL, 0);
     }
 
     if (socket_fd == 0) {
-	printf( "waiting for gdb client connection...\n" );
-	socket_fd = accept( gdb_server_socket, NULL, NULL );
-#ifdef __MINGW32__
-	if ( socket_fd != INVALID_SOCKET)
-#endif
-	if ( socket_fd == 0) {
-	    perror("error accepting gdb server connection");
-	    return -1;
-	}
+        printf( "waiting for gdb client connection...\n" );
+        socket_fd = accept( gdb_server_socket, NULL, NULL );
+
+        if ( socket_fd == 0) {
+            perror("error accepting gdb server connection");
+            return -1;
+        }
     }
 
     command_2int_string_t *command = (command_2int_string_t *)buffer;
@@ -507,19 +505,19 @@ int dc_gdbpacket(unsigned char * buffer)
     out_size = ntohl(command->value1);
 
     if (in_size)
-	send(socket_fd, command->string, in_size, 0);
+        send(socket_fd, command->string, in_size, 0);
 
     if (out_size) {
-	retval = recv(socket_fd, gdb_buf, out_size > GDBBUFSIZE ? GDBBUFSIZE : out_size, 0);
+        retval = recv(socket_fd, gdb_buf, out_size > GDBBUFSIZE ? GDBBUFSIZE : out_size, 0);
 
-	if (retval == 0)
-	socket_fd = -1;
+        if (retval == 0)
+            socket_fd = -1;
     }
 #ifdef __MINGW32__
-	if(retval == SOCKET_ERROR) {
-	fprintf(stderr, "Got socket error: %d\n", WSAGetLastError());
-	return -1;
-	}
+    if(retval == SOCKET_ERROR) {
+        fprintf(stderr, "Got socket error: %d\n", WSAGetLastError());
+        return -1;
+    }
 #endif
     send_cmd(CMD_RETVAL, retval, retval, (unsigned char *)gdb_buf, retval);
 
