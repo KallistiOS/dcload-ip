@@ -1021,7 +1021,7 @@ int main(int argc, char *argv[])
         console = 1;
 
     if (console & (command=='x'))
-	    printf("Console enabled\n");
+        printf("Console enabled\n");
 
 #ifndef __MINGW32__
     if (path)
