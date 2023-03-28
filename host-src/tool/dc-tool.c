@@ -1025,7 +1025,7 @@ int main(int argc, char *argv[])
 
 #ifndef __MINGW32__
     if (path)
-	    printf("Chroot enabled\n");
+        printf("Chroot enabled\n");
 #endif
 
     if (cdfs_redir & (command=='x'))
