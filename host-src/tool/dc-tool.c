@@ -1029,7 +1029,7 @@ int main(int argc, char *argv[])
 #endif
 
     if (cdfs_redir & (command=='x'))
-	    printf("Cdfs redirection enabled\n");
+        printf("Cdfs redirection enabled\n");
 
     if (open_socket(hostname)<0)
     {
