@@ -1018,7 +1018,7 @@ int main(int argc, char *argv[])
         printf("Quiet download\n");
 
     if (cdfs_redir & (!console))
-	    console = 1;
+        console = 1;
 
     if (console & (command=='x'))
 	    printf("Console enabled\n");
