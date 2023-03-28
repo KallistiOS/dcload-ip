@@ -1015,7 +1015,7 @@ int main(int argc, char *argv[])
     }
 
     if (quiet)
-	    printf("Quiet download\n");
+        printf("Quiet download\n");
 
     if (cdfs_redir & (!console))
 	    console = 1;
