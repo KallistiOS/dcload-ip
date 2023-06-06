@@ -19,8 +19,8 @@
  *
  */
 
-#include "config.h"
- 
+#include "config.h" // needed for newer BFD library
+
 #ifdef WITH_BFD
 #include <bfd.h>
 #else
@@ -51,6 +51,8 @@
 #include "syscalls.h"
 #include "dc-io.h"
 #include "commands.h"
+
+#include "utils.h"
 
 int _nl_msg_cat_cntr;
 
@@ -188,13 +190,17 @@ int getopt(int nargc, char * const *nargv, const char *ostr)
 }
 #endif
 
+int gdb_socket_started = 0;
 #ifndef __MINGW32__
 int dcsocket = 0;
+int socket_fd = 0;
 int gdb_server_socket = -1;
 #else
 #define bzero(b,len) (memset((b), '\0', (len)), (void) 0)
+/* Winsock SOCKET is defined as an unsigned int, so -1 won't work here */
 SOCKET dcsocket = 0;
-SOCKET gdb_server_socket = -1;
+SOCKET gdb_server_socket = 0;
+SOCKET socket_fd = 0;
 #endif
 
 void cleanup(char **fnames)
@@ -209,7 +215,31 @@ void cleanup(char **fnames)
     close(dcsocket);
 #else
     closesocket(dcsocket);
-    WSACleanup();
+#endif
+
+	// Handle GDB
+	if (gdb_socket_started) {
+		gdb_socket_started = 0;
+
+		// Send SIGTERM to the GDB Client, telling remote DC program has ended
+		char gdb_buf[16];
+		strcpy(gdb_buf, "+$X0f#ee\0");
+
+#ifdef __MINGW32__
+		send(socket_fd, gdb_buf, strlen(gdb_buf), 0);
+		sleep(1);
+		closesocket(socket_fd);
+		closesocket(gdb_server_socket);
+#else
+		write(socket_fd, gdb_buf, strlen(gdb_buf));
+		sleep(1);
+		close(socket_fd);
+		close(gdb_server_socket);
+#endif
+	}
+
+#ifdef __MINGW32__
+	WSACleanup();
 #endif
 }
 
@@ -393,7 +423,7 @@ int send_data(unsigned char * addr, unsigned int dcaddr, unsigned int size)
 
 void usage(void)
 {
-    printf("\n%s %s by <andrewk@napalm-x.com>\n\n", PACKAGE, VERSION);
+    printf("\n%s %s by <andrewk@napalm-x.com>\n\n",PACKAGE,VERSION);
     printf("-x <filename> Upload and execute <filename>\n");
     printf("-u <filename> Upload <filename>\n");
     printf("-d <filename> Download to <filename>\n");
@@ -419,7 +449,7 @@ int start_ws()
     int failed = 0;
     failed = WSAStartup(MAKEWORD(2,2), &wsaData);
     if ( failed != NO_ERROR ) {
-	perror("WSAStartup");
+	log_error("WSAStartup");
 	return 1;
     }
 
@@ -439,7 +469,7 @@ int open_socket(char *hostname)
 #else
     if (dcsocket == INVALID_SOCKET) {
 #endif
-	perror("socket");
+	log_error("socket");
 	return -1;
     }
 
@@ -449,15 +479,21 @@ int open_socket(char *hostname)
 
     host = gethostbyname(hostname);
 
-    if (!host) {
-	perror("gethostbyname");
-	return -1;
-    }
+	if (!host) {
+		// Try to remove leading zeros from hostname...
+		cleanup_ip_address(hostname);
+		host = gethostbyname(hostname);
+		if (!host) {
+			// definitely, we can't do nothing
+			log_error("gethostbyname");
+			return -1;
+		}
+	}
 
     memcpy((char *)&sin.sin_addr, host->h_addr, host->h_length);
 
     if (connect(dcsocket, (struct sockaddr *)&sin, sizeof(sin)) < 0) {
-	perror("connect");
+	log_error("connect");
 	return -1;
     }
 
@@ -466,7 +502,7 @@ int open_socket(char *hostname)
 	int failed = 0;
     failed = ioctlsocket(dcsocket, FIONBIO, &flags);
     if ( failed == SOCKET_ERROR ) {
-	perror("ioctlsocket");
+	log_error("ioctlsocket");
 	return -1;
     }
 #else
@@ -480,9 +516,21 @@ int recv_response(unsigned char *buffer, int timeout)
 {
     int start = time_in_usec();
     int rv = -1;
+#if (SAVE_MY_FANS != 0)
+    struct timespec pausetime = {0}, pauseremain = {0};
+#endif
 
     while( ((time_in_usec() - start) < timeout) && (rv == -1))
-	rv = recv(dcsocket, (void *)buffer, 2048, 0);
+	  {
+       rv = recv(dcsocket, (void *)buffer, 2048, 0);
+       // 100Mbit/s is 10 nanoseconds, but that's reportedly a little slow.
+       // 5 is better, but still a bit slow. So let's do 1 nanosecond.
+       // There's no picosecond sleep, so this is about as good as it gets.
+#if (SAVE_MY_FANS != 0)
+       pausetime.tv_nsec = SAVE_MY_FANS; // Now it's configurable from Makefile.cfg
+       nanosleep(&pausetime, &pauseremain);
+#endif
+    }
 
     return rv;
 }
@@ -589,7 +637,7 @@ unsigned int upload(char *filename, unsigned int address)
     }
 
     if((inputfd = open(filename, O_RDONLY | O_BINARY)) < 0) {
-        perror(filename);
+        log_error(filename);
         return -1;
     }
 
@@ -658,7 +706,7 @@ unsigned int upload(char *filename, unsigned int address)
     inputfd = open(filename, O_RDONLY | O_BINARY);
 
     if (inputfd < 0) {
-        perror(filename);
+        log_error(filename);
         return -1;
     }
 
@@ -700,7 +748,7 @@ int download(char *filename, unsigned int address,
     outputfd = open(filename, O_WRONLY | O_CREAT | O_TRUNC | O_BINARY, 0644);
 
     if (outputfd < 0) {
-	perror(filename);
+	log_error(filename);
 	return -1;
     }
 
@@ -751,13 +799,13 @@ int do_console(char *path, char *isofile)
     if (isofile) {
 	isofd = open(isofile, O_RDONLY | O_BINARY);
 	if (isofd < 0)
-	    perror(isofile);
+	    log_error(isofile);
     }
 
 #ifndef __MINGW32__
     if (path)
 	if (chroot(path))
-	    perror(path);
+	    log_error(path);
 #endif
 
     while (1) {
@@ -832,7 +880,7 @@ int open_gdb_socket(int port)
 #else
   if ( gdb_server_socket < 0 ) {
 #endif
-	perror( "error creating gdb server socket" );
+	log_error( "error creating gdb server socket" );
 	return -1;
   }
 
@@ -842,7 +890,7 @@ int open_gdb_socket(int port)
 #else
   if ( checkbind < 0 ) {
 #endif
-	perror( "error binding gdb server socket" );
+	log_error( "error binding gdb server socket" );
 	return -1;
   }
 
@@ -852,12 +900,18 @@ int open_gdb_socket(int port)
 #else
   if ( checklisten < 0 ) {
 #endif
-	perror( "error listening to gdb server socket" );
+	log_error( "error listening to gdb server socket" );
 	return -1;
     }
 
     return 0;
 }
+
+#ifdef __MINGW32__
+#define AVAILABLE_OPTIONS		"x:u:d:a:s:t:i:npqhrg"
+#else
+#define AVAILABLE_OPTIONS		"x:u:d:a:s:t:c:i:npqhrg"
+#endif
 
 int main(int argc, char *argv[])
 {
@@ -885,11 +939,9 @@ int main(int argc, char *argv[])
 #ifdef __MINGW32__
 	if(start_ws())
 		return -1;
-
-	someopt = getopt(argc, argv, "x:u:d:a:s:t:i:npqhrg");
-#else
-    someopt = getopt(argc, argv, "x:u:d:a:s:t:c:i:npqhrg");
 #endif
+
+	someopt = getopt(argc, argv, AVAILABLE_OPTIONS);
     while (someopt > 0) {
 	switch (someopt) {
 	case 'x':
@@ -967,6 +1019,7 @@ int main(int argc, char *argv[])
 	case 'g':
 	    printf("Starting a GDB server on port 2159\n");
 	    open_gdb_socket(2159);
+		gdb_socket_started = 1;
 	    break;
 	default:
 	/* The user obviously mistyped something */
@@ -974,11 +1027,7 @@ int main(int argc, char *argv[])
 	    goto doclean;
 	    break;
 	}
-#ifdef __MINGW32__
-	someopt = getopt(argc, argv, "x:u:d:a:s:t:i:nqhr");
-#else
-	someopt = getopt(argc, argv, "x:u:d:a:s:t:c:i:nqhr");
-#endif
+	someopt = getopt(argc, argv, AVAILABLE_OPTIONS);
     }
 
     if (quiet)
@@ -1033,7 +1082,7 @@ int main(int argc, char *argv[])
 	    goto doclean;
 	break;
     case 'r':
-	printf("Reseting...\n");
+	printf("Resetting...\n");
 	if(send_command(CMD_REBOOT, 0, 0, NULL, 0) == -1)
 	    goto doclean;
 	break;
