@@ -499,7 +499,7 @@ int open_socket(char *hostname)
     unsigned long flags = 1;
 	int failed = 0;
     failed = ioctlsocket(dcsocket, FIONBIO, &flags);
-    if ( ailed == SOCKET_ERROR) {
+    if (failed == SOCKET_ERROR) {
         log_error("ioctlsocket");
         return -1;
     }
