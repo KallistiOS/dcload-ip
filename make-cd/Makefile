@@ -1,9 +1,9 @@
 CDRECORD	= wodim dev=0,0,0 speed=8
 SCRAMBLE	= scramble
-DD		= dd
-CP		= cp
+DD			= dd
+CP			= cp
 MKISOFS		= genisoimage
-CAT		= cat
+CAT			= cat
 TOUCH		= touch
 1ST_READ	= ../target-src/1st_read/1st_read.bin
 
