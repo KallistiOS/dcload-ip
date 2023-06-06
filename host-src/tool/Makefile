@@ -16,11 +16,11 @@ endif
 
 # Additional libraries for MinGW/MSYS
 ifdef MINGW32
-    LDFLAGS += -lws2_32 -lwsock32 -liconv
+    LDFLAGS 	+= -lws2_32 -lwsock32 -liconv
 endif
 
 ifdef STANDALONE_BINARY
-    LDFLAGS += -static
+    LDFLAGS 	+= -static
 endif
 
 DCTOOL	= dc-tool-ip$(EXECUTABLEEXTENSION)
@@ -28,23 +28,23 @@ DCTOOL	= dc-tool-ip$(EXECUTABLEEXTENSION)
 OBJECTS	= dc-tool.o syscalls.o unlink.o utils.o
 
 .c.o:
-    $(CC) $(CFLAGS) $(INCLUDE) -o $@ -c $<
+	$(CC) $(CFLAGS) $(INCLUDE) -o $@ -c $<
 
 all: $(DCTOOL)
 
 $(DCTOOL): $(OBJECTS)
-    $(CC) -o $@ $(OBJECTS) $(LDFLAGS)
+	$(CC) -o $@ $(OBJECTS) $(LDFLAGS)
 
 .PHONY : install
 install: $(DCTOOL) | $(TOOLINSTALLDIR)
-    cp $(DCTOOL) $(TOOLINSTALLDIR)
+	cp $(DCTOOL) $(TOOLINSTALLDIR)
 $(TOOLINSTALLDIR):
-    -mkdir $(TOOLINSTALLDIR)
+	-mkdir $(TOOLINSTALLDIR)
 
 .PHONY : clean
 clean:
-    -rm -f $(OBJECTS)
+	-rm -f $(OBJECTS)
 
 .PHONY : distclean
 distclean: clean
-    -rm -f $(DCTOOL)
+	-rm -f $(DCTOOL)
