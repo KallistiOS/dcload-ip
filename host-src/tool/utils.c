@@ -10,7 +10,7 @@ void log_error( const char * prefix ) {
 	
 #ifdef __MINGW32__	
 	DWORD dwError = WSAGetLastError();
-	if ( dwError ) {
+	if(dwError) {
 		TCHAR *err = NULL;
 		FormatMessageA(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS | FORMAT_MESSAGE_MAX_WIDTH_MASK, 
 			NULL, dwError, MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT), (LPTSTR)&err, 0, NULL);
@@ -59,7 +59,7 @@ void cleanup_ip_address( char *hostname ) {
 		i++;		
 	}
 	
-	if (!has_value) {
+	if(!has_value) {
 		buf[j++] = '0';
 	}
 	

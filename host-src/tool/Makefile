@@ -1,16 +1,16 @@
 include ../../Makefile.cfg
 
-CC		= $(HOSTCC)
+CC		  = $(HOSTCC)
 CFLAGS	= $(HOSTCFLAGS) -DDCLOAD_VERSION=\"$(VERSION)\" -DDREAMCAST_IP=\"$(DREAMCAST_IP)\" -DHAVE_GETOPT -DSAVE_MY_FANS=$(SAVE_MY_FANS)
 LDFLAGS = $(HOSTLDFLAGS)
 INCLUDE =
 
 ifeq ($(WITH_BFD),1)
   CFLAGS	+= -DWITH_BFD
-  LDFLAGS	= -L$(BFDLIB) -lbfd -liberty -lintl -lz
+  LDFLAGS	 = -L$(BFDLIB) -lbfd -liberty -lintl -lz
   INCLUDE	+= -I$(BFDINCLUDE)
 else
-  LDFLAGS	= -L$(ELFLIB) -lelf
+  LDFLAGS	 = -L$(ELFLIB) -lelf
   INCLUDE	+= -I$(ELFINCLUDE)
 endif
 

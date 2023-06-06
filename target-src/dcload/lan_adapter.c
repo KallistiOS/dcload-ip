@@ -7,7 +7,6 @@
 #include <string.h>
 #include "packet.h"
 #include "net.h"
-//#include "adapter.h" // already in lan_adapter.h
 #include "lan_adapter.h"
 #include "dcload.h" // clear_lines is in here
 #include "video.h" // for draw_string
