@@ -6,26 +6,26 @@ LDFLAGS = $(HOSTLDFLAGS)
 INCLUDE =
 
 ifeq ($(WITH_BFD),1)
-    CFLAGS	+= -DWITH_BFD
-    LDFLAGS	= -L$(BFDLIB) -lbfd -liberty -lintl -lz
-    INCLUDE	+= -I$(BFDINCLUDE)
+	CFLAGS	+= -DWITH_BFD
+	LDFLAGS	= -L$(BFDLIB) -lbfd -liberty -lintl -lz
+	INCLUDE	+= -I$(BFDINCLUDE)
 else
-    LDFLAGS	= -L$(ELFLIB) -lelf
-    INCLUDE	+= -I$(ELFINCLUDE)
+	LDFLAGS	= -L$(ELFLIB) -lelf
+	INCLUDE	+= -I$(ELFINCLUDE)
 endif
 
 # Additional libraries for MinGW/MSYS
 ifdef MINGW32
-    LDFLAGS 	+= -lws2_32 -lwsock32 -liconv
+	LDFLAGS 	+= -lws2_32 -lwsock32 -liconv
 endif
 
 ifdef STANDALONE_BINARY
-    LDFLAGS 	+= -static
+	LDFLAGS 	+= -static
 endif
 
 DCTOOL	= dc-tool-ip$(EXECUTABLEEXTENSION)
 
-OBJECTS	= dc-tool.o syscalls.o unlink.o
+OBJECTS	= dc-tool.o syscalls.o unlink.o utils.o
 
 .c.o:
 	$(CC) $(CFLAGS) $(INCLUDE) -o $@ -c $< 
