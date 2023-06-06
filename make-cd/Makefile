@@ -1,13 +1,16 @@
 CDRECORD	= wodim dev=0,0,0 speed=8
 SCRAMBLE	= scramble
-DD		= dd
-CP		= cp
+DD			= dd
+CP			= cp
 MKISOFS		= genisoimage
-CAT		= cat
+CAT			= cat
 TOUCH		= touch
 1ST_READ	= ../target-src/1st_read/1st_read.bin
 
 all: $(1ST_READ) audio.raw burn-audio data.raw burn-data
+
+$(1ST_READ):
+	cd ../target-src && make
 
 audio.raw:
 	$(DD) if=/dev/zero of=audio.raw bs=2352 count=300

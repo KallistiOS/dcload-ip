@@ -205,7 +205,12 @@ SOCKET socket_fd = 0;
 
 void cleanup(char **fnames)
 {
-    int counter = 0;
+    int counter;
+
+    for(counter = 0; counter < 4; counter++) {
+        if(fnames[counter] != 0)
+            free(fnames[counter]);
+    }
 
     for(; counter < 4; counter++)
         if(fnames[counter] != 0)
@@ -213,9 +218,9 @@ void cleanup(char **fnames)
 
     if(dcsocket)
 #ifndef __MINGW32__
-    close(dcsocket);
+        close(dcsocket);
 #else
-    closesocket(dcsocket);
+        closesocket(dcsocket);
 #endif
 
     // Handle GDB
@@ -242,6 +247,31 @@ void cleanup(char **fnames)
 #ifdef __MINGW32__
     WSACleanup();
 #endif
+	
+	// Handle GDB
+	  if(gdb_socket_started) {	
+		    gdb_socket_started = 0;
+		
+        // Send SIGTERM to the GDB Client, telling remote DC program has ended
+        char gdb_buf[16];
+        strcpy(gdb_buf, "+$X0f#ee\0");		
+
+#ifdef __MINGW32__		
+        send(socket_fd, gdb_buf, strlen(gdb_buf), 0);
+        sleep(1);
+        closesocket(socket_fd);
+        closesocket(gdb_server_socket);
+#else
+        write(socket_fd, gdb_buf, strlen(gdb_buf));
+        sleep(1);
+        close(socket_fd);
+        close(gdb_server_socket);
+#endif
+    }
+
+#ifdef __MINGW32__
+    WSACleanup();
+#endif	
 }
 
 extern char *optarg;
@@ -848,6 +878,7 @@ int do_console(char *path, char *isofile)
         // reset the timer
         time.tv_nsec = 500000000;
     }
+
     if(!(memcmp(buffer, CMD_REWINDDIR, 4)))
         CatchError(dc_rewinddir(buffer));
 
@@ -870,7 +901,7 @@ int open_gdb_socket(int port) {
         log_error( "error creating gdb server socket" );
         return -1;
     }
-
+      
     int checkbind = bind( gdb_server_socket, (struct sockaddr*)&server_addr, sizeof( server_addr ) );
 #ifdef __MINGW32__
     if(checkbind == SOCKET_ERROR) {
@@ -916,7 +947,7 @@ int main(int argc, char *argv[])
     char *path = 0;
     char *hostname = DREAMCAST_IP;
     char *cleanlist[4] = { 0, 0, 0, 0 };
-
+  
     if(argc < 2) {
         usage();
         return 0;
@@ -1048,6 +1079,7 @@ int main(int argc, char *argv[])
         printf("Executing at <0x%x>\n", address);
         if(execute(address, console, cdfs_redir))
             goto doclean;
+
         if(console)
             do_console(path, isofile);
         break;
@@ -1056,7 +1088,7 @@ int main(int argc, char *argv[])
         if(upload(filename, address))
             goto doclean;
         break;
-        case 'd':
+    case 'd':
         if(!size) {
             fprintf(stderr, "You must specify a size (-s <size>) with download (-d <filename>)\n");
             goto doclean;
