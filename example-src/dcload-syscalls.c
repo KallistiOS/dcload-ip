@@ -17,7 +17,7 @@ int read (int file, void *buf, size_t len)
 	return -1;
 }
 
-int lseek (int filedes, off_t offset, int dir)
+off_t lseek (int filedes, off_t offset, int dir)
 {
     if (*DCLOADMAGICADDR == DCLOADMAGICVALUE)
 	return dcloadsyscall(pclseeknr, filedes, offset, dir);

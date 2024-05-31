@@ -110,6 +110,7 @@ start_l:
 	add	#4,r0
 	cmp/hi r0,r1 ! This was cmp/ge before, which would always write 4 bytes beyond the end...
 	bt	start_l
+no_bss:
 
 	mov.l set_fpscr_k, r1
 	jsr @r1
