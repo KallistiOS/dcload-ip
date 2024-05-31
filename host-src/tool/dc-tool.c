@@ -503,17 +503,14 @@ int open_socket(char *hostname) {
     sin.sin_family = AF_INET;
     sin.sin_port = htons(31313);
 
+    // Try to remove leading zeros from hostname...
+    cleanup_ip_address(hostname);
     host = gethostbyname(hostname);
 
     if(!host) {
-        // Try to remove leading zeros from hostname...
-        cleanup_ip_address(hostname);
-        host = gethostbyname(hostname);
-        if(!host) {
-            // definitely, we can't do nothing
-            log_error("gethostbyname");
-            return -1;
-        }
+        // definitely, we can't do nothing
+        log_error("gethostbyname");
+        return -1;
     }
 
     memcpy((char *)&sin.sin_addr, host->h_addr, host->h_length);
@@ -945,13 +942,17 @@ int main(int argc, char *argv[])
     char *filename = 0;
     char *isofile = 0;
     char *path = 0;
-    char *hostname = DREAMCAST_IP;
+    char *hostname = 0;
     char *cleanlist[4] = { 0, 0, 0, 0 };
   
     if(argc < 2) {
         usage();
         return 0;
     }
+
+    hostname = malloc(strlen(DREAMCAST_IP) + 1);
+    cleanlist[3] = hostname;
+    strcpy(hostname, DREAMCAST_IP);
 
 #ifdef __MINGW32__
     if(start_ws())
@@ -1011,6 +1012,7 @@ int main(int argc, char *argv[])
             size = strtoul(optarg, NULL, 0);
             break;
         case 't':
+            free(hostname);
             hostname = malloc(strlen(optarg) + 1);
             cleanlist[3] = hostname;
             strcpy(hostname, optarg);

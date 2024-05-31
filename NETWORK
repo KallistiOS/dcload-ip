@@ -11,6 +11,6 @@ dcload-ip implements (to some extent) the following protocols:
 
 * UDP  - dcload-ip uses UDP for transfering data and commands 
 
-
+* DHCP - dcload-ip can use IPv4 DHCP to get an IP address now
 
 
