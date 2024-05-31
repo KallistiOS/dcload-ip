@@ -1,6 +1,6 @@
 #include "dcload-syscalls.h"
 
-int main(void)
+void main(void)
 {
     int fd;
     unsigned char buffer[2048];
