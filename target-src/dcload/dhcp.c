@@ -72,7 +72,7 @@ static unsigned int dhcpoffer_ip_from_pkt = 0; // LE
 static unsigned int dhcpoffer_xid = 0; // BE, transaction ID of the exchange in progress
 
 volatile unsigned int dhcp_lease_time = 0; // LE
-static unsigned int renewal_increment = 0;
+static unsigned int xid_increment = 0;
 
 // Which reply we're waiting for, if any. Replies are only accepted in
 // SELECTING, REQUESTING, RENEWING and REBINDING; INIT and BOUND ignore them.
@@ -117,6 +117,18 @@ static unsigned int get_some_time(int which)
 	// little endian
 	// GCC should use SH4 'xtrct' for this
 	return (time_array[1] << 16 | time_array[0] >> 16);
+}
+
+// Transaction ID for a new DISCOVER or renewal. The perf counter restarts at
+// every ACK, so the time alone repeats if the next transaction starts after the
+// same delay, and some servers answer a repeated xid with a bare ACK. Adding a
+// per-transaction step keeps xids unique within this boot, and the end of the
+// MAC keeps two Dreamcasts on the same network apart.
+static unsigned int new_xid(unsigned char *bbmac)
+{
+	unsigned int xid = (get_some_time(DCLOAD_PMCR) ^ 0xDEADBEEF) + xid_increment + ((bbmac[3] << 16) | (bbmac[4] << 8) | bbmac[5]);
+	xid_increment += 0x1000;
+	return xid;
 }
 
 // Steps 1 & 3 and part of 5 are handled here, called by dhcp_go() and dhcp_renew()
@@ -462,7 +474,7 @@ static int kos_net_dhcp_fill_options(unsigned char *bbmac, dhcp_pkt_t *req, uint
 			/* Fill in the initial DHCPDISCOVER packet */
 	    //req->hops = 0;
 	    // Remember the xid: replies are matched against it, and the REQUEST reuses it
-	    dhcpoffer_xid = htonl(get_some_time(DCLOAD_PMCR) ^ 0xDEADBEEF);
+	    dhcpoffer_xid = new_xid(bbmac);
 	    req->xid = dhcpoffer_xid;
 	    //req->secs = 0;
 	    //req->flags = 0; // 0x0000 want unicast response, 0x8000 want broadcast response
@@ -488,8 +500,7 @@ static int kos_net_dhcp_fill_options(unsigned char *bbmac, dhcp_pkt_t *req, uint
 		}
 		else // Assume renewal or rebinding (msgtype == DHCP_RENEW_TYPE or DHCP_REBIND_TYPE)
 		{
-			dhcpoffer_xid = (get_some_time(DCLOAD_PMCR) ^ 0xDEADBEEF) + renewal_increment; // It's a DHCP Request with a unique transaction ID
-			renewal_increment += 0x1000; // This just ensures DHCP renewal transaction IDs can't be the same within the uptime of the machine.
+			dhcpoffer_xid = new_xid(bbmac); // It's a DHCP Request with a unique transaction ID
 			/* Fill in the DHCP renewal request */
 			//req->hops = 0;
 			req->xid = dhcpoffer_xid;
