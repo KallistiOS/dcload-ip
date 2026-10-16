@@ -78,7 +78,7 @@ volatile unsigned int installed_adapter = BBA_MODEL;
 
 static volatile unsigned int current_counter_array[2] = {0};
 static volatile unsigned int old_dhcp_lease_updater_array[2] = {0}; // To update lease time display
-static volatile unsigned char dont_renew = 0;
+static volatile unsigned int next_renew_array[2] = {0}; // Perf counter value to retry an unanswered renewal at
 
 static char *mac_string = "de:ad:be:ef:ba:be";
 static char *ip_string = "000.000.000.000"; // Reserve this much memory for max-size IP address
@@ -405,52 +405,59 @@ void set_ip_dhcp(void)
 
 	unsigned long long int *current_counter = (unsigned long long int*)current_counter_array;
 	unsigned long long int *old_dhcp_lease_updater = (unsigned long long int*)old_dhcp_lease_updater_array;
+	unsigned long long int *next_renew = (unsigned long long int*)next_renew_array;
 
-	// Check if lease is still active, renewal threshold is at 50% lease time. '>> 1' is '/2'.
+	// Renewal (T1) is at 50% of the lease and rebinding (T2) at 87.5%, per RFC 2131.
 	// NOTE: GCC apparently can't handle the concept of dividing 64-bit numbers on SH4, even by a power of two.
-	// It adds over 1kB of extra code at the mere sight of it, weirdly, so we do the shift manually here.
-	if(__builtin_expect(dhcp_lease_time && (!dont_renew) && ((long_dhcp_lease_time >> 1) < (*current_counter)), 0))
+	// It adds over 1kB of extra code at the mere sight of it, weirdly, so we do the shifts manually here.
+	// Also: best variable name ever, lol.
+	unsigned long long int eighty_seven_point_five = (long_dhcp_lease_time >> 1) + (long_dhcp_lease_time >> 2) + (long_dhcp_lease_time >> 3); // 0.5 + 0.25 + 0.125 = 0.875, or 87.5%
+
+	if(__builtin_expect(dhcp_lease_time && (long_dhcp_lease_time < (*current_counter)), 0))
 	{
-		dhcp_lease_time = 0; // This disables DHCP renewal unless it gets updated with a valid value. Its dual-purpose is a renewal code enabler.
+		// The lease ran out without a successful renewal or rebinding, so the
+		// address isn't ours any more. Go back to discovery below.
+		dhcp_lease_time = 0;
+		our_ip = 0;
+	}
+	else if(__builtin_expect(dhcp_lease_time && ((long_dhcp_lease_time >> 1) < (*current_counter)) && ((*next_renew) < (*current_counter)), 0))
+	{
 		old_dhcp_lease_updater_array[0] = 0;
 		old_dhcp_lease_updater_array[1] = 0;
-		// Renewal needed
+		// Renewal needed. Past T2, ask any server instead of just ours.
+		int rebind = (eighty_seven_point_five < (*current_counter));
 		dhcp_waiting_mode_display();
 
-		disp_status("DHCP renewing...");
-		int renew_result = dhcp_renew((unsigned int*)&our_ip); // So that GCC doesn't warn about volatile
+		disp_status(rebind ? "DHCP rebinding..." : "DHCP renewing...");
+		int renew_result = dhcp_renew((unsigned int*)&our_ip, rebind); // So that GCC doesn't warn about volatile
 
 		if(renew_result == -2)
 		{
-			// Not an error, it just means IP was no longer valid. Time to get a new one!
-			// We're supposed to wait until 87.5% of the lease time has elapsed to do a new discover.
-			dont_renew = 1;
+			// Not an error, it just means IP was no longer valid. Stop using it
+			// and get a new one right away (discovery runs below).
+			dhcp_lease_time = 0;
+			our_ip = 0;
 		}
 		else if(renew_result == -1)
 		{
-			// Errored out (ACK was invalid/didn't pass validation steps in
-			// handle_dhcp_reply()), so IP is invalid. Therefore set it to
-			// 255.255.255.255 so that the dhcp discover process won't occur.
-			// With a lease time of 0 and an IP of 0xffffffff, DHCP renewal and
-			// discovery will both be disabled, effectively disabling DHCP entirely.
-			our_ip = 0xffffffff;
+			// No answer, but the lease is still good until it runs out. Try again
+			// in half the time left until T2 (or until expiry when rebinding), but
+			// no sooner than 60 seconds, as RFC 2131 section 4.4.5 suggests.
+			unsigned long long int deadline = rebind ? long_dhcp_lease_time : eighty_seven_point_five;
+			unsigned long long int retry_wait = (deadline - (*current_counter)) >> 1;
+			if(retry_wait < 60ULL * (unsigned long long int)PERFCOUNTER_SCALE)
+			{
+				retry_wait = 60ULL * (unsigned long long int)PERFCOUNTER_SCALE;
+			}
+			*next_renew = (*current_counter) + retry_wait;
 
-			// Update IP, change DHCP active indicator to timeout.
-			update_ip_display(our_ip, dhcp_timeout_string);
-			// Display lease time of 0
-			update_lease_time_display(dhcp_lease_time);
-
-			// At this point DHCP is disabled.
-			// Don't need the counter anymore.
-			PMCR_Disable(DCLOAD_PMCR);
-
-			// Early return because there's no point in continuing.
-			// dhcp_renew() runs dhcp_go() if it gets a NAK, and we probably got here
-			// because of dhcp_nest_counter_maxed
-			return;
+			// Not in waiting mode any more. The lease countdown redraws itself below.
+			update_ip_display(our_ip, dhcp_mode_string);
 		}
 		else
 		{
+			// The ACK restarted the perf counter, so the retry time is stale
+			*next_renew = 0;
 			// Not in waiting mode any more
 			update_ip_display(our_ip, dhcp_mode_string);
 			// Didn't time out! Display new lease time.
@@ -673,18 +680,17 @@ void set_ip_dhcp(void)
 #endif
 	}
 
-	// We're supposed to wait until 87.5% of the lease time has elapsed to do a new discover,
-	// if we even need to do a new discover (due to getting a NAK during renewal).
-	// GCC will almost certainly optimize this into the conditional. This is just way more readable.
-	// Also: best variable name ever, lol.
-	unsigned long long int eighty_seven_point_five = (long_dhcp_lease_time >> 1) + (long_dhcp_lease_time >> 2) + (long_dhcp_lease_time >> 3); // 0.5 + 0.25 + 0.125 = 0.875, or 87.5%
 	// This checks if set_ip_from_file() gave us a DHCP-mode IP (0.x.x.x) or a static
-	// IP of some sort. It also checks if the DHCP lease expired per above. DOUBLE WHAMMY!!
+	// IP of some sort. A NAK'd renewal or an expired lease above also sets the IP
+	// back to 0.0.0.0, so this starts a new discover for those too. DOUBLE WHAMMY!!
 	// Only need to check the first octet of IP since it's a /8 range
-	// Also check if renew was NAK'd, and if it was, are we at the 87.5% threshold for a new discover?
-	if(__builtin_expect(((our_ip & 0xff000000) == 0) || (dont_renew && (eighty_seven_point_five < (*current_counter))), 0))
+	if(__builtin_expect((our_ip & 0xff000000) == 0, 0))
 	{
-		dont_renew = 0;
+		// Any old retry time belongs to the lease we're replacing
+		next_renew_array[0] = 0;
+		next_renew_array[1] = 0;
+		old_dhcp_lease_updater_array[0] = 0;
+		old_dhcp_lease_updater_array[1] = 0;
 		dhcp_waiting_mode_display();
 
 		// Wait until DHCP assigns an IP address. This should not take very long.

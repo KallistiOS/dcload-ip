@@ -156,9 +156,11 @@ static void process_udp(ether_header_t *ether, ip_header_t *ip, udp_header_t *ud
 
 	// Handle receipt of DHCP packets that are directed to this system
 	dhcp_pkt_t *udp_pkt_data = (dhcp_pkt_t*)udp->data;
-	if(__builtin_expect(udp_pkt_data->op == DHCP_OP_BOOTREPLY, 0)) // DHCP ACK or DHCP OFFER
+	if(__builtin_expect(udp->dest == htons(DHCP_SOURCE_PORT), 0)) // DHCP replies go to the client port...
 	{
-		if(!handle_dhcp_reply(ether->src, udp_pkt_data, udp_data_length)) // -8 because udp->length includes 8-byte udp header
+		// ...from the server port. Anything else sent to port 68 isn't a DHCP reply.
+		if((udp->src == htons(DHCP_DEST_PORT)) && (udp_pkt_data->op == DHCP_OP_BOOTREPLY)
+			&& !handle_dhcp_reply(ether->src, udp_pkt_data, udp_data_length)) // -8 because udp->length includes 8-byte udp header
 		{ // -1 is true in C
 			// If we got a DHCP packet that belongs to some other machine, e.g. some machine requires a broadcasted address instead of a unicasted one,
 			// don't escape the loop since we didn't get the packet we needed.

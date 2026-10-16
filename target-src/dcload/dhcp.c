@@ -32,12 +32,21 @@
 // Need to uniquely identify renewal in build_send_dhcp_packet(),
 // so for internal purposes use an invalid DHCP type for that.
 #define DHCP_RENEW_TYPE 0
+// Rebinding is a renewal broadcast to any server instead of unicast to the one
+// that gave us the lease, so it also needs its own invalid DHCP type.
+#define DHCP_REBIND_TYPE 0xff
 // For a list of all valid DHCP message type values, see:
 // https://www.iana.org/assignments/bootp-dhcp-parameters/bootp-dhcp-parameters.xhtml#message-type-53
 // Some of them are implemented in dhcp.h by virtue of KOS.
 
-#define DHCP_DEST_PORT 67
-#define DHCP_SOURCE_PORT 68
+// Seconds to wait for an ACK to a renewal before giving up on this attempt.
+// set_ip_dhcp() in dcload.c schedules the next attempt.
+#define DHCP_RENEW_TIMEOUT 4
+
+// The lease timer is the 48-bit perf counter, so leases longer than it can
+// count (about 16 days in CPU cycle mode) are cut down to fit. Renewing early
+// is always allowed.
+#define DHCP_MAX_LEASE_TIME ((unsigned int)(0xffffffffffffULL / (unsigned long long int)PERFCOUNTER_SCALE))
 
 // DHCP Discover & Request packets are 342 bytes
 // Old versions of Windows apparently used 576-byte frames, but we ain't old Windows!
@@ -60,13 +69,15 @@ static uint32 kos_net_dhcp_get_32bit(dhcp_pkt_t *pkt, uint8 opt, int len); // Re
 
 static unsigned int dhcpoffer_server_ip_from_pkt = 0; // LE
 static unsigned int dhcpoffer_ip_from_pkt = 0; // LE
-static unsigned int dhcpoffer_xid = 0; // BE
+static unsigned int dhcpoffer_xid = 0; // BE, transaction ID of the exchange in progress
 
 volatile unsigned int dhcp_lease_time = 0; // LE
 static unsigned int renewal_increment = 0;
 
+// Which reply we're waiting for, if any. Replies are only accepted in
+// SELECTING, REQUESTING, RENEWING and REBINDING; INIT and BOUND ignore them.
+static unsigned char dhcp_state = DHCP_STATE_INIT;
 static unsigned char dhcp_acked = 0;
-static unsigned char dhcp_renewal = 0;
 static unsigned char dhcp_renewal_nak = 0;
 static unsigned char dhcp_nest_counter = 0;
 unsigned char dhcp_nest_counter_maxed = 0;
@@ -119,6 +130,7 @@ static void build_send_dhcp_packet(unsigned char kind)
 	unsigned char * dhcp_out_pkt = dhcp_pkt_buf + ETHER_H_LEN + IP_H_LEN + UDP_H_LEN;
 	unsigned char * dhcp_out_mac = (unsigned char *)broadcast; // So that GCC doesn't warn about discarding 'const'
 	unsigned int dhcp_out_ip = 0xffffffff; // 255.255.255.255 -- broadcast IP, doesn't need to be byteswapped :)
+	unsigned int dhcp_src_ip = our_ip;
 
 	// Make the packet data
 	kos_net_dhcp_fill_options(bb->mac, (dhcp_pkt_t*)dhcp_out_pkt, kind);
@@ -134,21 +146,28 @@ static void build_send_dhcp_packet(unsigned char kind)
 		//
 		// Also, Fun Fact: Write bit 0x01 to the RxConfig register to turn the Dreamcast into a wireshark-like packet sniffer :)
 		// Might need to use 0x0f to get all the packet options (and 0x3f to capture error and runt packets). Neat!
+
+		dhcp_src_ip = 0; // No address yet, so the source is 0.0.0.0
 	}
 	else if(kind == DHCP_MSG_DHCPREQUEST)
 	{
-		// Don't need to do anything
+		dhcp_src_ip = 0; // Still not ours until the server ACKs it
 	}
-	else // Assume renewal
+	else // Assume renewal or rebinding
 	{
 		bb->start(); // Accept broadcast packets and physical match packets (definitely need these! It's already run by rtl_init in bb_init, but it doesn't do anything to have it here just in case for future DHCP renewal purposes)
 
-		dhcp_out_mac = router_mac;
-		dhcp_out_ip = dhcpoffer_server_ip_from_pkt;
+		if(kind == DHCP_RENEW_TYPE)
+		{
+			// Renewal goes straight to the server that gave us the lease.
+			// Rebinding stays broadcast so that any server can answer.
+			dhcp_out_mac = router_mac;
+			dhcp_out_ip = dhcpoffer_server_ip_from_pkt;
+		}
 	}
 
 	make_ether(dhcp_out_mac, bb->mac, dhcp_ether_header);
-	make_ip(dhcp_out_ip, our_ip, UDP_H_LEN + DHCP_PKT_LEN, IP_UDP_PROTOCOL, dhcp_ip_header, 0); // IP header: dest & src IP addr, header length (hardcoded), packet length excluding ethernet header (IP header size hardcoded), IP protocol type, IP packet ID
+	make_ip(dhcp_out_ip, dhcp_src_ip, UDP_H_LEN + DHCP_PKT_LEN, IP_UDP_PROTOCOL, dhcp_ip_header, 0); // IP header: dest & src IP addr, header length (hardcoded), packet length excluding ethernet header (IP header size hardcoded), IP protocol type, IP packet ID
 	make_udp(DHCP_DEST_PORT, DHCP_SOURCE_PORT, DHCP_PKT_LEN, dhcp_ip_header, dhcp_udp_header);
 	bb->tx(dhcp_pkt_buf, ETHER_H_LEN + IP_H_LEN + UDP_H_LEN + DHCP_PKT_LEN);
 }
@@ -156,18 +175,46 @@ static void build_send_dhcp_packet(unsigned char kind)
 // Steps 2 & 4 are handled here, and this is called from net.c
 int handle_dhcp_reply(unsigned char *routersrcmac, dhcp_pkt_t* pkt_data, unsigned short len)
 {
+	// Servers broadcast OFFERs, ACKs and NAKs for other clients too, and since
+	// we accept broadcast frames we see all of them. Only replies to our own
+	// transaction (same xid, same client MAC) that arrive while we're actually
+	// waiting for one are ours; returning -1 keeps bb->loop() waiting.
+	if( (dhcp_state == DHCP_STATE_INIT) || (dhcp_state == DHCP_STATE_BOUND)
+		|| (len < DHCP_H_LEN + 4)
+		|| (pkt_data->options[0] != 0x63) || (pkt_data->options[1] != 0x82) // DHCP Magic Cookie
+		|| (pkt_data->options[2] != 0x53) || (pkt_data->options[3] != 0x63)
+		|| (pkt_data->xid != dhcpoffer_xid)
+		|| memcmp_16bit_eq(pkt_data->chaddr, bb->mac, DHCP_HLEN_ETHERNET/2) )
+	{
+		return -1;
+	}
+
 	int msg_type = kos_net_dhcp_get_message_type(pkt_data, len);
 
 	if(msg_type == DHCP_MSG_DHCPOFFER) // DHCP OFFER is 342 bytes
 	{
+		// Only take the first offer; any others (e.g. from a second server) are ignored
+		if(dhcp_state != DHCP_STATE_SELECTING)
+		{
+			return -1;
+		}
+
 		// Parse offer message. We only really care about IP address
 
-		dhcpoffer_server_ip_from_pkt = kos_net_dhcp_get_32bit(pkt_data, DHCP_OPTION_SERVER_ID, len); // Need server ip to identify to server that it has been chosen (mandatory)
+		unsigned int offer_server_ip = kos_net_dhcp_get_32bit(pkt_data, DHCP_OPTION_SERVER_ID, len); // Need server ip to identify to server that it has been chosen (mandatory)
+		if(!offer_server_ip)
+		{
+			return -1; // Servers must send this, and the REQUEST can't select the offer without it
+		}
+
+		dhcpoffer_server_ip_from_pkt = offer_server_ip;
 		dhcpoffer_ip_from_pkt = ntohl(pkt_data->yiaddr); // This is where we get our IP address from
-		dhcpoffer_xid = pkt_data->xid; // This transaction ID is needed to identify that this is still all part of the same handshake. Don't byteswap it.
+		// The xid already matches the one from our DISCOVER, which the REQUEST reuses
 
 		memcpy(router_mac, routersrcmac, 6); // Save router's mac address for renewal
 		// No need to byteswap since this is never used in little endian code
+
+		dhcp_state = DHCP_STATE_REQUESTING;
 
 		// Other fields like subnet, etc. will be in here, but don't need them (get them via kos_net_dhcp_get_32bit(), since they're in the options area)
 		// Any options acquired in the dhcp_pkt_t need to be "ntohl()"-ified to be usable as standard LE data
@@ -177,8 +224,11 @@ int handle_dhcp_reply(unsigned char *routersrcmac, dhcp_pkt_t* pkt_data, unsigne
 	}
 	else if(msg_type == DHCP_MSG_DHCPACK) // DHCP ACK is 342 bytes
 	{
+		unsigned char dhcp_renewal = (dhcp_state == DHCP_STATE_RENEWING) || (dhcp_state == DHCP_STATE_REBINDING);
+
 		// Verify that IP address matches and we're all done with this handshake!
-		if( (pkt_data->xid == dhcpoffer_xid) && ((dhcp_renewal == 1) || (ntohl(pkt_data->yiaddr) == dhcpoffer_ip_from_pkt)) )
+		// (The xid was already checked above.)
+		if( dhcp_renewal || ((dhcp_state == DHCP_STATE_REQUESTING) && (ntohl(pkt_data->yiaddr) == dhcpoffer_ip_from_pkt)) )
 		{
 			//
 			// Ideally there would be an ARP done here to ensure that the provided IP address is not already taken
@@ -191,11 +241,26 @@ int handle_dhcp_reply(unsigned char *routersrcmac, dhcp_pkt_t* pkt_data, unsigne
 			{
 				// Refresh IP with result from renewal
 				dhcpoffer_ip_from_pkt = ntohl(pkt_data->yiaddr); // This is where we get our IP address from for renewal
+
+				// A rebinding ACK may come from a different server than the one
+				// that gave us the lease, so renew with whoever answered from now on
+				unsigned int ack_server_ip = kos_net_dhcp_get_32bit(pkt_data, DHCP_OPTION_SERVER_ID, len);
+				if(ack_server_ip)
+				{
+					dhcpoffer_server_ip_from_pkt = ack_server_ip;
+					memcpy(router_mac, routersrcmac, 6);
+				}
 			}
 
 			// Get the lease time from ACK
 			// dhcp_lease_time is usable in little endian
 			dhcp_lease_time = kos_net_dhcp_get_32bit(pkt_data, DHCP_OPTION_IP_LEASE_TIME, len);
+			if(dhcp_lease_time > DHCP_MAX_LEASE_TIME)
+			{
+				// Too long for the perf counter (this includes infinite leases),
+				// which would otherwise wrap before renewal time ever came up
+				dhcp_lease_time = DHCP_MAX_LEASE_TIME;
+			}
 			// Set PMCR for calculating renewal
 			// Reset 48-bit perfcounter to 0; renewal is calculated by elapsed time
 			// BUS_RATIO_COUNTER is set in dcload.h
@@ -205,6 +270,7 @@ int handle_dhcp_reply(unsigned char *routersrcmac, dhcp_pkt_t* pkt_data, unsigne
 			PMCR_Restart(DCLOAD_PMCR, PMCR_ELAPSED_TIME_MODE, PMCR_COUNT_RATIO_CYCLES);
 #endif
 			dhcp_acked = 1;
+			dhcp_state = DHCP_STATE_BOUND;
 
 			return 0; // success
 		}
@@ -218,7 +284,7 @@ int handle_dhcp_reply(unsigned char *routersrcmac, dhcp_pkt_t* pkt_data, unsigne
 		// This might happen
 		// If it does, try DHCP discovery again...
 
-		if(dhcp_renewal == 1) // If we got here during renewal process, it means the IP is no longer valid.
+		if((dhcp_state == DHCP_STATE_RENEWING) || (dhcp_state == DHCP_STATE_REBINDING)) // If we got here during renewal process, it means the IP is no longer valid.
 		{
 			// It's not an error, but it means we need to go through dhcp discovery again.
 			// Exiting gracefully here allows that to happen without killing stack usage due to recursion.
@@ -226,6 +292,11 @@ int handle_dhcp_reply(unsigned char *routersrcmac, dhcp_pkt_t* pkt_data, unsigne
 			// and that will start the discovery process.
 			dhcp_renewal_nak = 1;
 			return 0;
+		}
+
+		if(dhcp_state != DHCP_STATE_REQUESTING) // NAKs only answer REQUESTs
+		{
+			return -1;
 		}
 
 		if(dhcp_nest_counter == DHCP_NAK_NEST_MAX) // Is this the 'max'th time we've been here?
@@ -263,21 +334,23 @@ int dhcp_go(unsigned int *dhcp_ip_address_buffer) // Address buffer comes in as 
 	dhcp_attempts = 0;
 	timeout_loop = 1;   // Initial timeout in secs for waiting for DHCP response
 
-	while(!dhcp_acked)  // Loop DHCP attempts until acked
+	while(!dhcp_acked && !dhcp_nest_counter_maxed)  // Loop DHCP attempts until acked (or we got NAK'd too many times)
 	{
 		dhcp_attempts++; // Increase the attempt count
 		if (timeout_loop < 0) // If timeout_loop is -1, we arrived here from a timeout waiting for a DHCP response
 		{
 			timeout_loop = (dhcp_attempts > 10 ? 30 : 3*(dhcp_attempts)); // Increase the timeout for the next attempt, max 30 secs
 		}
-		build_send_dhcp_packet(DHCP_MSG_DHCPDISCOVER);
+		dhcp_state = DHCP_STATE_SELECTING;
+		build_send_dhcp_packet(DHCP_MSG_DHCPDISCOVER); // Picks a new xid
 		bb->loop(0); // Wait for DHCP OFFER packet
-		if (timeout_loop < 0) continue; // If timed out waiting for DHCP OFFER, this will be -1, start over
- 		build_send_dhcp_packet(DHCP_MSG_DHCPREQUEST);
+		if (dhcp_state != DHCP_STATE_REQUESTING) continue; // Timed out (timeout_loop is -1) or left the loop without an offer, start over
+		build_send_dhcp_packet(DHCP_MSG_DHCPREQUEST);
 		bb->loop(0); // Wait for DHCP ACK (or NAK...)
 		if (timeout_loop < 0) continue; // If timed out waiting for DHCP ACK, this will be -1, start over
 	}
 
+	dhcp_state = dhcp_acked ? DHCP_STATE_BOUND : DHCP_STATE_INIT;
 	dhcp_attempts = 0; // Done with these variables now
 	timeout_loop = 0;  // Reset them for potential future use
 
@@ -303,16 +376,19 @@ int dhcp_go(unsigned int *dhcp_ip_address_buffer) // Address buffer comes in as 
 	}
 }
 
-int dhcp_renew(unsigned int *dhcp_ip_address_buffer)
+int dhcp_renew(unsigned int *dhcp_ip_address_buffer, int rebind)
 {
 	dhcp_acked = 0;
-	dhcp_renewal = 1;
 	dhcp_renewal_nak = 0;
+	dhcp_state = rebind ? DHCP_STATE_REBINDING : DHCP_STATE_RENEWING;
+	timeout_loop = DHCP_RENEW_TIMEOUT; // Don't wait forever if the server doesn't answer
 
-	build_send_dhcp_packet(DHCP_RENEW_TYPE);
-	bb->loop(0); // Wait for DHCP ACK
+	build_send_dhcp_packet(rebind ? DHCP_REBIND_TYPE : DHCP_RENEW_TYPE);
+	bb->loop(0); // Wait for DHCP ACK (or NAK, or timeout)
 
-	dhcp_renewal = 0; // Done with the renewal function, whatever the outcome
+	timeout_loop = 0;
+	// Done with the renewal function. Without an answer the current lease is still good.
+	dhcp_state = dhcp_renewal_nak ? DHCP_STATE_INIT : DHCP_STATE_BOUND;
 
 	if(dhcp_renewal_nak)
 	{
@@ -385,7 +461,9 @@ static int kos_net_dhcp_fill_options(unsigned char *bbmac, dhcp_pkt_t *req, uint
 		{
 			/* Fill in the initial DHCPDISCOVER packet */
 	    //req->hops = 0;
-	    req->xid = htonl(get_some_time(DCLOAD_PMCR) ^ 0xDEADBEEF);
+	    // Remember the xid: replies are matched against it, and the REQUEST reuses it
+	    dhcpoffer_xid = htonl(get_some_time(DCLOAD_PMCR) ^ 0xDEADBEEF);
+	    req->xid = dhcpoffer_xid;
 	    //req->secs = 0;
 	    //req->flags = 0; // 0x0000 want unicast response, 0x8000 want broadcast response
 	    //req->ciaddr = 0;
@@ -408,7 +486,7 @@ static int kos_net_dhcp_fill_options(unsigned char *bbmac, dhcp_pkt_t *req, uint
 			serverid = dhcpoffer_server_ip_from_pkt;
 			reqip = dhcpoffer_ip_from_pkt;
 		}
-		else // Assume renewal (msgtype == 0)
+		else // Assume renewal or rebinding (msgtype == DHCP_RENEW_TYPE or DHCP_REBIND_TYPE)
 		{
 			dhcpoffer_xid = (get_some_time(DCLOAD_PMCR) ^ 0xDEADBEEF) + renewal_increment; // It's a DHCP Request with a unique transaction ID
 			renewal_increment += 0x1000; // This just ensures DHCP renewal transaction IDs can't be the same within the uptime of the machine.
@@ -422,7 +500,9 @@ static int kos_net_dhcp_fill_options(unsigned char *bbmac, dhcp_pkt_t *req, uint
 			//req->siaddr = 0;
 			//req->giaddr = 0;
 
-			reqip = our_ip;
+			// No server identifier or requested IP option here: with ciaddr filled
+			// in, RFC 2131 (section 4.3.2, table 5) says both MUST NOT be sent, and
+			// some servers treat a renewal carrying option 50 as an INIT-REBOOT.
 		}
 
 		memcpy(req->chaddr, bbmac, DHCP_HLEN_ETHERNET);
@@ -439,7 +519,7 @@ static int kos_net_dhcp_fill_options(unsigned char *bbmac, dhcp_pkt_t *req, uint
     /* Message Type: DHCPDISCOVER or DHCPREQUEST */
     req->options[pos++] = DHCP_OPTION_MESSAGE_TYPE;
     req->options[pos++] = 1; /* Length = 1 */
-		if(!msgtype) // msgtype of 0 means DHCP renewal to this fill function
+		if((msgtype == DHCP_RENEW_TYPE) || (msgtype == DHCP_REBIND_TYPE)) // Renewal and rebinding are both DHCP REQUESTs on the wire
 		{
 			req->options[pos++] = DHCP_MSG_DHCPREQUEST;
 		}
@@ -516,9 +596,11 @@ static int kos_net_dhcp_get_message_type(dhcp_pkt_t *pkt, int len)
         if(pkt->options[i] == DHCP_OPTION_MESSAGE_TYPE) {
             return pkt->options[i + 2];
         }
-        else if((pkt->options[i] == DHCP_OPTION_PAD) ||
-                (pkt->options[i] == DHCP_OPTION_END)) {
+        else if(pkt->options[i] == DHCP_OPTION_PAD) {
             ++i;
+        }
+        else if(pkt->options[i] == DHCP_OPTION_END) {
+            break; // Anything after this is padding, not options
         }
         else {
             i += pkt->options[i + 1] + 2;
