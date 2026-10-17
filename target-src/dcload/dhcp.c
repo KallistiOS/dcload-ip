@@ -238,9 +238,27 @@ int handle_dhcp_reply(unsigned char *routersrcmac, dhcp_pkt_t* pkt_data, unsigne
 	{
 		unsigned char dhcp_renewal = (dhcp_state == DHCP_STATE_RENEWING) || (dhcp_state == DHCP_STATE_REBINDING);
 
+		// An ACK straight back to our DISCOVER is the Rapid Commit path (RFC 4039,
+		// we ask for it with option 80): the server has already committed the
+		// lease, so there's no REQUEST to send. Some gateways also do this on their
+		// own for a client they already have a binding for. The xid and chaddr
+		// checks above make it ours either way, so take it like an OFFER + ACK.
+		if(dhcp_state == DHCP_STATE_SELECTING)
+		{
+			unsigned int ack_server_ip = kos_net_dhcp_get_32bit(pkt_data, DHCP_OPTION_SERVER_ID, len);
+			if(!ack_server_ip || !pkt_data->yiaddr)
+			{
+				return -1; // Not a usable lease
+			}
+			dhcpoffer_server_ip_from_pkt = ack_server_ip;
+			dhcpoffer_ip_from_pkt = ntohl(pkt_data->yiaddr);
+			memcpy(router_mac, routersrcmac, 6);
+		}
+
 		// Verify that IP address matches and we're all done with this handshake!
 		// (The xid was already checked above.)
-		if( dhcp_renewal || ((dhcp_state == DHCP_STATE_REQUESTING) && (ntohl(pkt_data->yiaddr) == dhcpoffer_ip_from_pkt)) )
+		if( dhcp_renewal || (dhcp_state == DHCP_STATE_SELECTING)
+			|| ((dhcp_state == DHCP_STATE_REQUESTING) && (ntohl(pkt_data->yiaddr) == dhcpoffer_ip_from_pkt)) )
 		{
 			//
 			// Ideally there would be an ARP done here to ensure that the provided IP address is not already taken
@@ -355,7 +373,8 @@ int dhcp_go(unsigned int *dhcp_ip_address_buffer) // Address buffer comes in as 
 		}
 		dhcp_state = DHCP_STATE_SELECTING;
 		build_send_dhcp_packet(DHCP_MSG_DHCPDISCOVER); // Picks a new xid
-		bb->loop(0); // Wait for DHCP OFFER packet
+		bb->loop(0); // Wait for DHCP OFFER packet (or a Rapid Commit ACK)
+		if (dhcp_acked) break; // Rapid Commit: the ACK came straight back, nothing left to request
 		if (dhcp_state != DHCP_STATE_REQUESTING) continue; // Timed out (timeout_loop is -1) or left the loop without an offer, start over
 		build_send_dhcp_packet(DHCP_MSG_DHCPREQUEST);
 		bb->loop(0); // Wait for DHCP ACK (or NAK...)
@@ -539,6 +558,14 @@ static int kos_net_dhcp_fill_options(unsigned char *bbmac, dhcp_pkt_t *req, uint
 			req->options[pos++] = msgtype;
 		}
 
+
+		if(msgtype == DHCP_MSG_DHCPDISCOVER)
+		{
+			/* Rapid Commit (RFC 4039): a server that supports it may answer the
+			   DISCOVER with an ACK and skip the OFFER/REQUEST round trip. */
+			req->options[pos++] = DHCP_OPTION_RAPID_COMMIT;
+			req->options[pos++] = 0; /* Length = 0 */
+		}
 
     /* Max Message Length: 1500 octets */
     req->options[pos++] = DHCP_OPTION_MAX_MESSAGE;

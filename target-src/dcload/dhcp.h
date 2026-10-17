@@ -129,6 +129,7 @@ typedef unsigned int uint32;
 #define DHCP_OPTION_VENDOR_CLASS_ID     60
 #define DHCP_OPTION_CLIENT_ID           61
 /* 62 and 63 undefined by RFC 2132 */
+#define DHCP_OPTION_RAPID_COMMIT        80 /* RFC 4039, not in KOS */
 #define DHCP_OPTION_NISPLUS_DOMAIN      64
 #define DHCP_OPTION_NISPLUS_SERVER      65
 #define DHCP_OPTION_TFTP_SERVER         66
